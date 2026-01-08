@@ -1,0 +1,6 @@
+{
+    "price": 0.02,
+    "supply": 100000,
+    "stripe_public_key": "pk_test_your_key_here",
+    "stripe_secret_key": "sk_test_your_key_here"
+}
