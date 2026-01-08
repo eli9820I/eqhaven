@@ -12,14 +12,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $amount = floatval($_POST['amount']);
     
     if ($amount >= 1) {
+        // Calculate how much CSC they get at current price
+        $cscReceived = $amount / $config['price'];
+        
         $users = json_decode(file_get_contents('users.json'), true);
         foreach ($users as &$user) {
             if ($user['id'] === $_SESSION['user_id']) {
-                $user['usd_balance'] += $amount;
+                // Add CSC to their balance
+                $user['balance'] += $cscReceived;
                 break;
             }
         }
         file_put_contents('users.json', json_encode($users));
+        
+        // UPDATE CONFIG.JSON
+        // 1. Increase price by 5%
+        $config['price'] += ($config['price'] * 0.05);
+        
+        // 2. Track circulating supply
+        if (!isset($config['circulating'])) {
+            $config['circulating'] = 0;
+        }
+        $config['circulating'] += $cscReceived;
+        
+        // 3. Track total deposits
+        if (!isset($config['total_deposits'])) {
+            $config['total_deposits'] = 0;
+        }
+        $config['total_deposits'] += $amount;
+        
+        file_put_contents('config.json', json_encode($config));
         
         // Add transaction
         $transactions = file_exists('transactions.json') ? json_decode(file_get_contents('transactions.json'), true) : [];
@@ -27,15 +49,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'id' => uniqid(),
             'type' => 'deposit',
             'user_id' => $_SESSION['user_id'],
-            'amount' => $amount,
-            'method' => 'stripe',
-            'status' => 'completed',
-            'timestamp' => date('Y-m-d H:i:s')
+            'amount' => $cscReceived,
+            'price' => $config['price'], // New price after 5% increase
+            'total' => $amount,
+            'timestamp' => date('Y-m-d H:i:s'),
+            'note' => 'Deposit +5% price increase'
         ];
         $transactions[] = $transaction;
         file_put_contents('transactions.json', json_encode($transactions));
         
-        $success = "Deposit of $" . number_format($amount, 2) . " successful!";
+        // Add to blockchain
+        $blockchain = file_exists('blockchain.json') ? json_decode(file_get_contents('blockchain.json'), true) : [];
+        $lastBlock = end($blockchain);
+        $previousHash = $lastBlock ? $lastBlock['hash'] : '0';
+        
+        $newBlock = [
+            'index' => count($blockchain),
+            'timestamp' => time(),
+            'transactions' => [$transaction],
+            'previous_hash' => $previousHash,
+            'hash' => hash('sha256', json_encode($transaction) . $previousHash),
+            'nonce' => rand(1000, 9999)
+        ];
+        
+        $blockchain[] = $newBlock;
+        file_put_contents('blockchain.json', json_encode($blockchain));
+        
+        $success = "✅ Deposit successful! You received <strong>" . number_format($cscReceived, 2) . " CSC</strong>.<br>New price: <strong>$" . number_format($config['price'], 4) . "</strong> (+5%)";
     } else {
         $error = "Minimum deposit amount is $1.00";
     }
@@ -378,7 +418,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 0;
         }
 
-        /* Custom amount input styles */
         .amount-input-group {
             position: relative;
         }
@@ -397,7 +436,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             padding-left: 32px;
         }
 
-        /* Quick amount buttons */
         .quick-amounts {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -427,7 +465,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-color: rgba(102, 126, 234, 0.6);
         }
 
-        /* Loading overlay */
         .loading-overlay {
             position: fixed;
             top: 0;
@@ -465,39 +502,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-size: 14px;
         }
 
-        /* Confirmation message */
-        .confirmation {
-            text-align: center;
-            padding: 20px;
-        }
-
-        .confirmation-icon {
-            width: 60px;
-            height: 60px;
-            background: rgba(76, 217, 100, 0.2);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 15px;
-        }
-
-        .confirmation-icon svg {
-            width: 30px;
-            height: 30px;
-            color: var(--success-color);
-        }
-
-        .confirmation h3 {
-            color: var(--text-primary);
-            font-size: 20px;
-            margin-bottom: 8px;
-        }
-
-        .confirmation p {
-            color: var(--text-secondary);
-            font-size: 14px;
+        .conversion-info {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 12px;
+            padding: 15px;
             margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .conversion-rate {
+            color: var(--text-primary);
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .csc-received {
+            color: var(--success-color);
+            font-size: 18px;
+            font-weight: 700;
         }
     </style>
 </head>
@@ -511,18 +535,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <div class="checkout-container">
         <div class="card">
-            <h1>Secure Checkout</h1>
-            <p class="subtitle">Complete your deposit securely</p>
+            <h1>Deposit & Get CSC</h1>
+            <p class="subtitle">Deposit USD to receive CSC tokens instantly</p>
 
             <?php if (isset($success)): ?>
             <div class="success-message">
-                <?php echo htmlspecialchars($success); ?>
-                <div style="margin-top: 10px; font-size: 12px;">You will be redirected to your dashboard shortly...</div>
+                <?php echo $success; ?>
+                <div style="margin-top: 10px; font-size: 12px; color: rgba(76, 217, 100, 0.8);">
+                    Price increased by 5% due to deposit activity
+                </div>
             </div>
             <script>
                 setTimeout(() => {
                     window.location.href = 'index.php';
-                }, 3000);
+                }, 5000);
             </script>
             <?php endif; ?>
 
@@ -531,6 +557,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <?php echo htmlspecialchars($error); ?>
             </div>
             <?php endif; ?>
+
+            <!-- Current Price Display -->
+            <div class="conversion-info">
+                <div class="conversion-rate">
+                    Current Price: <strong>$<?php echo number_format($config['price'], 4); ?></strong> per CSC
+                </div>
+                <div class="csc-received" id="csc-preview">
+                    $10.00 = <?php echo number_format(10 / $config['price'], 2); ?> CSC
+                </div>
+            </div>
 
             <div class="payment-methods">
                 <div class="payment-method active" id="stripe-tab" onclick="switchMethod('stripe')">
@@ -544,7 +580,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <!-- Stripe Form -->
             <form id="stripe-form" method="POST" style="display: block;">
                 <div class="amount-section">
-                    <div class="amount-label">Amount to deposit</div>
+                    <div class="amount-label">Deposit Amount (USD)</div>
                     <div class="form-group amount-input-group">
                         <input type="number" name="amount" step="0.01" min="1" placeholder="0.00" required value="10.00" id="deposit-amount">
                     </div>
@@ -566,7 +602,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="form-group">
                     <label for="email">Email Address</label>
-                    <input type="email" id="email" placeholder="john@example.com" required value="<?php echo isset($_SESSION['email']) ? htmlspecialchars($_SESSION['email']) : ''; ?>">
+                    <input type="email" id="email" placeholder="john@example.com" required>
                 </div>
 
                 <div class="form-group">
@@ -576,7 +612,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
 
                 <button type="submit" id="submit-button">
-                    <span id="button-text">Deposit $<span id="display-amount">10.00</span></span>
+                    <span id="button-text">Deposit & Get CSC</span>
                     <span id="spinner" class="spinner" style="display: none;"></span>
                 </button>
 
@@ -591,10 +627,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <!-- Bitcoin Form -->
             <div id="bitcoin-form" style="display: none;">
                 <div class="amount-section">
-                    <div class="amount-label">Bitcoin Deposit</div>
+                    <div class="amount-label">Bitcoin Deposit (Gets CSC)</div>
                     <p style="color: var(--text-secondary); font-size: 14px; margin-top: 10px; line-height: 1.5;">
-                        Send Bitcoin to the address below. Your account will be credited after 3 confirmations.
-                        The deposit amount will be calculated based on the market rate at confirmation.
+                        Send Bitcoin to get CSC tokens. Amount of CSC received depends on market rate at confirmation.
                     </p>
                 </div>
 
@@ -616,14 +651,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <line x1="12" y1="16" x2="12" y2="12"></line>
                             <line x1="12" y1="8" x2="12.01" y2="8"></line>
                         </svg>
-                        Important Notes
+                        How Bitcoin Deposits Work
                     </div>
                     <ul class="info-list">
-                        <li>Minimum deposit: 0.0001 BTC</li>
+                        <li>Send Bitcoin to the address above</li>
+                        <li>After 3 confirmations, we convert BTC to USD at market rate</li>
+                        <li>You receive CSC tokens at current price (+5% price increase)</li>
                         <li>Network fee: 0.0005 BTC (paid by you)</li>
                         <li>Processing time: ~30 minutes (3 confirmations)</li>
-                        <li>Exchange rate: Market price at confirmation time</li>
-                        <li>Send only Bitcoin (BTC) to this address</li>
                     </ul>
                 </div>
             </div>
@@ -637,11 +672,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="loading-overlay" id="loading-overlay">
         <div class="loading-content">
             <div class="loading-spinner"></div>
-            <div class="loading-text">Processing your deposit...</div>
+            <div class="loading-text">Processing deposit & minting CSC tokens...</div>
         </div>
     </div>
 
     <script>
+        // Get current price from PHP
+        const currentPrice = <?php echo $config['price']; ?>;
+
         // Switch between payment methods
         function switchMethod(method) {
             const stripeForm = document.getElementById('stripe-form');
@@ -664,13 +702,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        // Calculate CSC received for amount
+        function calculateCSC(usdAmount) {
+            return usdAmount / currentPrice;
+        }
+
+        // Update CSC preview
+        function updateCSCPreview(amount) {
+            const cscAmount = calculateCSC(amount);
+            const cscPreview = document.getElementById('csc-preview');
+            cscPreview.innerHTML = `$${amount.toFixed(2)} = <strong>${cscAmount.toFixed(2)} CSC</strong>`;
+        }
+
         // Set quick amount
         function setAmount(amount) {
             const input = document.getElementById('deposit-amount');
-            const display = document.getElementById('display-amount');
             
             input.value = amount;
-            display.textContent = amount.toFixed(2);
+            updateCSCPreview(amount);
             
             // Update quick amount buttons
             document.querySelectorAll('.quick-amount').forEach(btn => {
@@ -681,10 +730,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             });
         }
 
-        // Update display amount when input changes
+        // Update preview when input changes
         document.getElementById('deposit-amount').addEventListener('input', function() {
-            const display = document.getElementById('display-amount');
-            display.textContent = parseFloat(this.value).toFixed(2);
+            const amount = parseFloat(this.value) || 0;
+            updateCSCPreview(amount);
             
             // Update quick amount buttons
             document.querySelectorAll('.quick-amount').forEach(btn => {
@@ -692,9 +741,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             });
         });
 
-        // Initialize quick amount button states
+        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             const initialAmount = parseFloat(document.getElementById('deposit-amount').value);
+            updateCSCPreview(initialAmount);
+            
             document.querySelectorAll('.quick-amount').forEach(btn => {
                 if (parseInt(btn.textContent.replace('$', '')) === initialAmount) {
                     btn.classList.add('active');
@@ -774,26 +825,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 loadingOverlay.style.display = 'flex';
 
                 // For demo purposes, we'll simulate a successful payment
-                // In production, you would use Stripe.js and your backend
-                
-                // Simulate API call delay
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 
-                // Show success message
-                const successMessage = document.getElementById('success-message');
-                successMessage.textContent = `Payment of $${amount.toFixed(2)} successful! Processing deposit...`;
-                successMessage.style.display = 'block';
-                
-                // Hide form
-                form.style.display = 'none';
-                
-                // Hide loading overlay
-                loadingOverlay.style.display = 'none';
-                
                 // Submit the form for server-side processing
-                setTimeout(() => {
-                    form.submit();
-                }, 1000);
+                form.submit();
 
             } catch (error) {
                 showError(error.message || 'Payment failed. Please try again.');
